@@ -200,7 +200,7 @@ void main(List<String> args) async {
     // Convert to PNG using ImageMagick
     print('Converting to PNG...');
     await shell.run('''
-      convert -density 300 temp.pdf -trim -quality 100 $outputFile
+      convert -density 300 'temp.pdf' -trim -quality 100 '$outputFile'
     ''');
 
     // Removed cleanup step to keep temp files
