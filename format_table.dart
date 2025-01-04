@@ -77,11 +77,7 @@ void main(List<String> args) async {
     // Read the TSV file
     print('Reading input file: $inputFile');
     final content = await File(inputFile).readAsString();
-    final lines = content
-        .split('\n')
-        .map((line) => line.trim())
-        .where((line) => line.isNotEmpty)
-        .toList();
+    final lines = content.split('\n').where((line) => line.isNotEmpty).toList();
 
     print('Found ${lines.length} non-empty lines');
 
@@ -90,87 +86,47 @@ void main(List<String> args) async {
     String? currentSection;
     var currentData = <List<String>>[];
 
-    // First, determine if this is a standard format (uppercase headers on separate lines)
-    // or a column format (first column contains headers)
-    bool isColumnFormat = true;
-    for (final line in lines) {
-      if (!line.contains('\t') && line == line.toUpperCase()) {
-        isColumnFormat = false;
-        break;
-      }
-    }
+    // Store the header row
+    final headerRow = lines.first.split('\t');
+    print('Found header row with ${headerRow.length} columns');
 
-    if (isColumnFormat) {
-      print('Detected column format - using first column as section headers');
-      // Process as column format
-      for (final line in lines) {
-        final cells = line.split('\t').map((cell) => cell.trim()).toList();
-        if (cells.isEmpty) continue;
+    // Process remaining lines
+    final dataLines = lines.skip(1).toList();
 
-        final firstCell = cells[0];
-        if (currentSection != firstCell &&
-            !firstCell.contains('(') &&
-            !firstCell.contains(',')) {
-          // This is a new section
-          currentSection = firstCell;
-          print('Found section header: $currentSection');
-          if (!sections.containsKey(currentSection)) {
-            sections[currentSection] = [];
-          }
-        }
+    // Process lines
+    for (final line in dataLines) {
+      // Split by tabs and preserve all cells exactly as they are, including empty ones
+      final rawCells = line.split('\t');
+      final cells = rawCells.toList();
 
-        if (currentSection != null) {
-          // Add the row to the current section, excluding the first cell if it's the section header
-          if (firstCell == currentSection) {
-            sections[currentSection]!.add(cells.skip(1).toList());
-          } else {
-            // For continuation rows, add empty cell at start to maintain alignment
-            sections[currentSection]!.add(['', ...cells.skip(1)]);
-          }
-          print(
-              'Added row with ${cells.length - 1} cells to section $currentSection');
-        }
-      }
-    } else {
-      print(
-          'Detected standard format - using uppercase lines as section headers');
-      // Original processing for standard format
-      for (final line in lines) {
-        if (!line.contains('\t') && line == line.toUpperCase()) {
-          print('Found section header: $line');
-          if (currentSection != null && currentData.isNotEmpty) {
-            sections[currentSection] = List.from(currentData);
-            print(
-                'Saved section $currentSection with ${currentData.length} rows');
-          }
-          currentSection = line;
-          currentData = [];
-        } else {
-          final cells = line.split('\t').map((cell) => cell.trim()).toList();
-          currentData.add(cells);
-          print('Added row with ${cells.length} cells');
-        }
+      // Pad with empty strings if we have fewer cells than the header
+      while (cells.length < headerRow.length) {
+        cells.add('');
       }
 
-      if (currentSection != null && currentData.isNotEmpty) {
-        sections[currentSection] = List.from(currentData);
-        print(
-            'Saved final section $currentSection with ${currentData.length} rows');
+      // Skip if all cells in the row are empty
+      if (cells.every((cell) => cell.trim().isEmpty)) {
+        print('Skipping empty row');
+        continue;
       }
+
+      // Add to default section
+      if (!sections.containsKey('data')) {
+        sections['data'] = [];
+      }
+      sections['data']!.add(cells);
+      print('Added row with ${cells.length} cells to default section');
     }
 
     if (sections.isEmpty) {
-      print('Error: No sections found in the input file');
+      print('Error: No data found in the input file');
       exit(1);
     }
 
     print('\nFound ${sections.length} sections: ${sections.keys.toList()}');
 
     // Generate HTML
-    // First, determine the number of columns (excluding section column in column format)
-    final numColumns = isColumnFormat
-        ? sections.values.first[0].length
-        : sections.values.first[0].length;
+    final numColumns = headerRow.length;
 
     final html = '''
     <!DOCTYPE html>
@@ -189,6 +145,10 @@ void main(List<String> args) async {
                 color: #000;
                 background-color: #e9ecef;
                 padding: 8px;
+            }
+            .header-row {
+                background-color: #f5f5f5;
+                font-weight: bold;
             }
             table {
                 width: 100%;
@@ -215,14 +175,16 @@ void main(List<String> args) async {
     </head>
     <body>
     <table>
+    <tr class="header-row">
+        ${headerRow.map((cell) => '<th>$cell</th>').join('\n')}
+    </tr>
     ${sections.entries.map((entry) => '''
+        ${entry.key != 'data' ? '''
         <tr>
             <th colspan="$numColumns" class="section-header">${entry.key}</th>
         </tr>
-        <tr>
-            ${entry.value[0].map((cell) => '<td>$cell</td>').join('\n')}
-        </tr>
-        ${entry.value.skip(1).map((row) => '''
+        ''' : ''}
+        ${entry.value.map((row) => '''
             <tr>
                 ${row.map((cell) => '<td>$cell</td>').join('\n')}
             </tr>
