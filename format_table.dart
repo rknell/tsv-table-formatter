@@ -90,40 +90,87 @@ void main(List<String> args) async {
     String? currentSection;
     var currentData = <List<String>>[];
 
+    // First, determine if this is a standard format (uppercase headers on separate lines)
+    // or a column format (first column contains headers)
+    bool isColumnFormat = true;
     for (final line in lines) {
-      print('Processing line: $line');
-
-      // Check if it's a section header (all caps, no tabs)
       if (!line.contains('\t') && line == line.toUpperCase()) {
-        print('Found section header: $line');
-        if (currentSection != null && currentData.isNotEmpty) {
-          sections[currentSection] = List.from(currentData);
-          print(
-            'Saved section $currentSection with ${currentData.length} rows',
-          );
-        }
-        currentSection = line;
-        currentData = [];
-      } else {
-        final cells = line.split('\t').map((cell) => cell.trim()).toList();
-        currentData.add(cells);
-        print('Added row with ${cells.length} cells');
+        isColumnFormat = false;
+        break;
       }
     }
 
-    // Don't forget the last section
-    if (currentSection != null && currentData.isNotEmpty) {
-      sections[currentSection] = List.from(currentData);
+    if (isColumnFormat) {
+      print('Detected column format - using first column as section headers');
+      // Process as column format
+      for (final line in lines) {
+        final cells = line.split('\t').map((cell) => cell.trim()).toList();
+        if (cells.isEmpty) continue;
+
+        final firstCell = cells[0];
+        if (currentSection != firstCell &&
+            !firstCell.contains('(') &&
+            !firstCell.contains(',')) {
+          // This is a new section
+          currentSection = firstCell;
+          print('Found section header: $currentSection');
+          if (!sections.containsKey(currentSection)) {
+            sections[currentSection] = [];
+          }
+        }
+
+        if (currentSection != null) {
+          // Add the row to the current section, excluding the first cell if it's the section header
+          if (firstCell == currentSection) {
+            sections[currentSection]!.add(cells.skip(1).toList());
+          } else {
+            // For continuation rows, add empty cell at start to maintain alignment
+            sections[currentSection]!.add(['', ...cells.skip(1)]);
+          }
+          print(
+              'Added row with ${cells.length - 1} cells to section $currentSection');
+        }
+      }
+    } else {
       print(
-        'Saved final section $currentSection with ${currentData.length} rows',
-      );
+          'Detected standard format - using uppercase lines as section headers');
+      // Original processing for standard format
+      for (final line in lines) {
+        if (!line.contains('\t') && line == line.toUpperCase()) {
+          print('Found section header: $line');
+          if (currentSection != null && currentData.isNotEmpty) {
+            sections[currentSection] = List.from(currentData);
+            print(
+                'Saved section $currentSection with ${currentData.length} rows');
+          }
+          currentSection = line;
+          currentData = [];
+        } else {
+          final cells = line.split('\t').map((cell) => cell.trim()).toList();
+          currentData.add(cells);
+          print('Added row with ${cells.length} cells');
+        }
+      }
+
+      if (currentSection != null && currentData.isNotEmpty) {
+        sections[currentSection] = List.from(currentData);
+        print(
+            'Saved final section $currentSection with ${currentData.length} rows');
+      }
+    }
+
+    if (sections.isEmpty) {
+      print('Error: No sections found in the input file');
+      exit(1);
     }
 
     print('\nFound ${sections.length} sections: ${sections.keys.toList()}');
 
     // Generate HTML
-    // First, determine the number of columns from the first data row in any section
-    final numColumns = sections.values.first[0].length;
+    // First, determine the number of columns (excluding section column in column format)
+    final numColumns = isColumnFormat
+        ? sections.values.first[0].length
+        : sections.values.first[0].length;
 
     final html = '''
     <!DOCTYPE html>
