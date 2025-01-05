@@ -19,19 +19,6 @@ Options:
 ''');
 }
 
-// Models
-class RowSpanInfo {
-  final int startIndex;
-  final int rowSpan;
-  final String value;
-
-  RowSpanInfo({
-    required this.startIndex,
-    required this.rowSpan,
-    required this.value,
-  });
-}
-
 class TableData {
   final List<String> headerRow;
   final List<List<String>> rows;
@@ -57,11 +44,18 @@ class TableDataProcessor {
     }
 
     final headerRow = lines.first.map((cell) => cell.toString()).toList();
+    final expectedColumns = headerRow.length;
+
     final dataRows = lines
         .skip(1)
         .map((row) {
           final processedCells = row.map((cell) => cell.toString()).toList();
-          while (processedCells.length < headerRow.length) {
+          // Trim any extra columns beyond the header length
+          if (processedCells.length > expectedColumns) {
+            processedCells.length = expectedColumns;
+          }
+          // Add empty cells if row is shorter than header
+          while (processedCells.length < expectedColumns) {
             processedCells.add('');
           }
           return processedCells;
@@ -73,73 +67,12 @@ class TableDataProcessor {
   }
 }
 
-// Rowspan Calculation
-class RowspanCalculator {
-  static Map<int, List<RowSpanInfo>> calculateRowspans(
-      List<List<String>> rows, Set<int> mergeCols) {
-    final columnRowSpans = <int, List<RowSpanInfo>>{};
-
-    for (final colIndex in mergeCols) {
-      final spans = <RowSpanInfo>[];
-      var currentValue = '';
-      var spanStartIndex = -1;
-      var currentSpan = 0;
-
-      for (var i = 0; i < rows.length; i++) {
-        final cell = rows[i][colIndex];
-
-        if (cell.isNotEmpty && cell != currentValue) {
-          // Add previous span if it exists
-          if (currentSpan > 1) {
-            spans.add(RowSpanInfo(
-              startIndex: spanStartIndex,
-              rowSpan: currentSpan,
-              value: currentValue,
-            ));
-          }
-          // Start new span
-          currentValue = cell;
-          spanStartIndex = i;
-          currentSpan = 1;
-        } else if (cell.isEmpty && spanStartIndex >= 0) {
-          currentSpan++;
-        } else if (cell.isNotEmpty && cell == currentValue) {
-          // Handle consecutive rows with the same non-empty value
-          if (spanStartIndex == -1) {
-            spanStartIndex = i;
-            currentSpan = 1;
-          } else {
-            currentSpan++;
-          }
-        }
-      }
-
-      // Add the final span if it exists
-      if (currentSpan > 1) {
-        spans.add(RowSpanInfo(
-          startIndex: spanStartIndex,
-          rowSpan: currentSpan,
-          value: currentValue,
-        ));
-      }
-
-      columnRowSpans[colIndex] = spans;
-    }
-
-    return columnRowSpans;
-  }
-}
-
 // HTML Generation
 class HtmlGenerator {
-  static String generateHtml(TableData tableData,
-      Map<int, List<RowSpanInfo>> columnRowSpans, Set<int> mergeCols,
+  static String generateHtml(TableData tableData, Set<int> mergeCols,
       {bool isLandscape = false}) {
-    final headerHtml = _generateHeaderRow(tableData.headerRow);
-    final bodyHtml =
-        _generateTableBody(tableData.rows, columnRowSpans, mergeCols);
-
-    return '''
+    // First generate basic HTML without any merging
+    final html = '''
     <!DOCTYPE html>
     <html>
     <head>
@@ -150,12 +83,18 @@ class HtmlGenerator {
     </head>
     <body>
     <table>
-    $headerHtml
-    $bodyHtml
+    ${_generateHeaderRow(tableData.headerRow)}
+    ${_generateTableBody(tableData.rows)}
     </table>
     </body>
     </html>
     ''';
+
+    // Apply merging as post-processing if needed
+    if (mergeCols.isNotEmpty) {
+      return _postProcessMergeCols(html, mergeCols);
+    }
+    return html;
   }
 
   static String _generateHeaderRow(List<String> headerRow) {
@@ -165,47 +104,96 @@ class HtmlGenerator {
     </tr>''';
   }
 
-  static String _generateTableBody(List<List<String>> rows,
-      Map<int, List<RowSpanInfo>> columnRowSpans, Set<int> mergeCols) {
-    // Track active rowspans
-    var activeRowspans = <int, int>{}; // column index -> remaining rows
+  static String _generateTableBody(List<List<String>> rows) {
+    return rows.map((row) {
+      // Check if this is a section header (only first column has content)
+      bool isSectionHeader =
+          row[0].isNotEmpty && row.skip(1).every((cell) => cell.isEmpty);
 
-    return rows.asMap().entries.map((rowEntry) {
-      final rowIndex = rowEntry.key;
-      final row = rowEntry.value;
-      var currentCol = 0;
-      var cells = <String>[];
+      if (isSectionHeader) {
+        return '''
+        <tr class="section-header">
+          <td colspan="${row.length}">${row[0]}</td>
+        </tr>''';
+      }
 
-      // First handle active rowspans
-      for (var col = 0; col < row.length; col++) {
-        if (activeRowspans.containsKey(col) && activeRowspans[col]! > 0) {
-          activeRowspans[col] = activeRowspans[col]! - 1;
-          continue; // Skip this column as it's being spanned
-        }
+      final cells = row.map((cell) => '<td>$cell</td>').join();
+      return '''
+      <tr>$cells</tr>''';
+    }).join('\n');
+  }
 
-        final value = row[col];
-        if (mergeCols.contains(col)) {
-          final spans = columnRowSpans[col] ?? [];
-          var spanFound = false;
-          for (final span in spans) {
-            if (rowIndex == span.startIndex) {
-              cells.add('<td rowspan="${span.rowSpan}">$value</td>');
-              activeRowspans[col] = span.rowSpan - 1;
-              spanFound = true;
-              break;
+  static String _postProcessMergeCols(String html, Set<int> mergeCols) {
+    final document = parse(html);
+    final rows = document.getElementsByTagName('tr').toList();
+    final headerRow = rows.removeAt(0); // Remove header row from processing
+
+    // Process each merge column
+    for (final colIndex in mergeCols) {
+      var currentValue = '';
+      var currentStartRow = -1;
+      var currentSpan = 0;
+
+      // First pass: calculate spans
+      for (var rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+        final cells = rows[rowIndex].getElementsByTagName('td');
+        if (cells.length <= colIndex) continue;
+
+        final cellValue = cells[colIndex].text;
+
+        if (cellValue.isNotEmpty) {
+          // If we have an active span and encounter a new value, finalize the previous span
+          if (currentSpan > 1) {
+            final startCell =
+                rows[currentStartRow].getElementsByTagName('td')[colIndex];
+            startCell.attributes['rowspan'] = currentSpan.toString();
+
+            // Remove spanned cells
+            for (var i = currentStartRow + 1; i < rowIndex; i++) {
+              final rowCells = rows[i].getElementsByTagName('td');
+              if (rowCells.length > colIndex) {
+                rowCells[colIndex].remove();
+              }
             }
           }
-          if (!spanFound && !activeRowspans.containsKey(col)) {
-            cells.add('<td>$value</td>');
+
+          // Start new span
+          if (cellValue != currentValue) {
+            currentValue = cellValue;
+            currentStartRow = rowIndex;
+            currentSpan = 1;
+          } else {
+            currentSpan++;
           }
-        } else {
-          cells.add('<td>$value</td>');
+        } else if (currentStartRow >= 0) {
+          // Empty cell, extend current span if we have one
+          currentSpan++;
         }
       }
 
-      return '''
-      <tr>${cells.join()}</tr>''';
-    }).join('\n');
+      // Handle the last span if it exists
+      if (currentSpan > 1) {
+        final startCell =
+            rows[currentStartRow].getElementsByTagName('td')[colIndex];
+        startCell.attributes['rowspan'] = currentSpan.toString();
+
+        // Remove spanned cells
+        for (var i = currentStartRow + 1; i < rows.length; i++) {
+          final rowCells = rows[i].getElementsByTagName('td');
+          if (rowCells.length > colIndex) {
+            rowCells[colIndex].remove();
+          }
+        }
+      }
+    }
+
+    // Reconstruct the table with the header
+    final table = document.getElementsByTagName('table').first;
+    table.nodes.clear();
+    table.append(headerRow);
+    rows.forEach(table.append);
+
+    return document.outerHtml;
   }
 
   static String _getStyles(bool isLandscape) {
@@ -244,64 +232,18 @@ class HtmlGenerator {
                 break-inside: avoid;
                 page-break-inside: avoid;
             }
-            tr:nth-child(even) {
+            tr:nth-child(even):not(.section-header) {
                 background-color: #fafafa;
             }
+            .section-header {
+                background-color: #e0e0e0 !important;
+                font-weight: bold;
+                font-size: 1.1em;
+            }
+            .section-header td {
+                padding: 12px 8px;
+            }
     ''';
-  }
-}
-
-// Validation
-class TableValidator {
-  static void validateStructure(String htmlContent) {
-    final document = parse(htmlContent);
-    final rows = document.getElementsByTagName('tr');
-    final headerCells = rows.first.getElementsByTagName('th');
-    final expectedColumns = headerCells.length;
-
-    // Track active rowspans
-    var activeRowspans = <int, int>{}; // column index -> remaining rows
-
-    for (var i = 1; i < rows.length; i++) {
-      final row = rows[i];
-      final cells = row.getElementsByTagName('td');
-      var effectiveColumnCount = 0;
-      var currentCol = 0;
-
-      // Count active rowspans from previous rows
-      for (var col = 0; col < expectedColumns; col++) {
-        if (activeRowspans.containsKey(col) && activeRowspans[col]! > 0) {
-          effectiveColumnCount++;
-          activeRowspans[col] = activeRowspans[col]! - 1;
-        }
-      }
-
-      // Process current row's cells
-      for (final cell in cells) {
-        // Skip columns that are currently being spanned
-        while (currentCol < expectedColumns &&
-            activeRowspans.containsKey(currentCol) &&
-            activeRowspans[currentCol]! > 0) {
-          currentCol++;
-        }
-
-        if (currentCol >= expectedColumns) break;
-
-        final rowspan = int.tryParse(cell.attributes['rowspan'] ?? '1') ?? 1;
-        if (rowspan > 1) {
-          activeRowspans[currentCol] = rowspan - 1;
-          effectiveColumnCount++;
-        } else {
-          effectiveColumnCount++;
-        }
-        currentCol++;
-      }
-
-      if (effectiveColumnCount != expectedColumns) {
-        throw Exception(
-            'Row ${i + 1} has $effectiveColumnCount columns, expected $expectedColumns');
-      }
-    }
   }
 }
 
@@ -338,7 +280,6 @@ class FileOperations {
   }
 }
 
-// Main function remains mostly the same but uses these components
 void main(List<String> args) async {
   // Parse command line arguments
   String? inputFile;
@@ -407,23 +348,15 @@ void main(List<String> args) async {
 
   try {
     final content = await File(inputFile).readAsString();
-
-    // Process the data
     final tableData = TableDataProcessor.processTableData(content);
 
-    // Calculate rowspans
-    final columnRowSpans =
-        RowspanCalculator.calculateRowspans(tableData.rows, mergeCols);
-
-    // Generate HTML
+    // Generate HTML with post-processing for merge columns
     final html = HtmlGenerator.generateHtml(
-        tableData, columnRowSpans, mergeCols,
-        isLandscape: isLandscape);
+      tableData,
+      mergeCols,
+      isLandscape: isLandscape,
+    );
 
-    // Validate
-    TableValidator.validateStructure(html);
-
-    // Convert to output
     await FileOperations.convertToOutput(html, outputFile,
         isLandscape: isLandscape);
 
