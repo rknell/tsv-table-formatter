@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'package:html/dom.dart';
 import 'package:process_run/shell.dart';
+import 'package:csv/csv.dart';
+import 'package:html/parser.dart' show parse;
 
 void printUsage() {
   print('''
@@ -77,7 +79,15 @@ void main(List<String> args) async {
     // Read the TSV file
     print('Reading input file: $inputFile');
     final content = await File(inputFile).readAsString();
-    final lines = content.split('\n').where((line) => line.isNotEmpty).toList();
+    final csvConverter = CsvToListConverter(
+      fieldDelimiter: '\t',
+      eol: '\n',
+      shouldParseNumbers: false,
+    );
+    final allRows = csvConverter.convert(content);
+    final lines = allRows
+        .where((row) => row.any((cell) => cell.toString().isNotEmpty))
+        .toList();
 
     print('Found ${lines.length} non-empty lines');
 
@@ -87,25 +97,24 @@ void main(List<String> args) async {
     var currentData = <List<String>>[];
 
     // Store the header row
-    final headerRow = lines.first.split('\t');
+    final headerRow = lines.first.map((cell) => cell.toString()).toList();
     print('Found header row with ${headerRow.length} columns');
 
     // Process remaining lines
     final dataLines = lines.skip(1).toList();
 
     // Process lines
-    for (final line in dataLines) {
-      // Split by tabs and preserve all cells exactly as they are, including empty ones
-      final rawCells = line.split('\t');
-      final cells = rawCells.toList();
+    for (final row in dataLines) {
+      // Convert all cells to strings
+      final processedCells = row.map((cell) => cell.toString()).toList();
 
       // Pad with empty strings if we have fewer cells than the header
-      while (cells.length < headerRow.length) {
-        cells.add('');
+      while (processedCells.length < headerRow.length) {
+        processedCells.add('');
       }
 
       // Skip if all cells in the row are empty
-      if (cells.every((cell) => cell.trim().isEmpty)) {
+      if (processedCells.every((cell) => cell.trim().isEmpty)) {
         print('Skipping empty row');
         continue;
       }
@@ -114,8 +123,8 @@ void main(List<String> args) async {
       if (!sections.containsKey('data')) {
         sections['data'] = [];
       }
-      sections['data']!.add(cells);
-      print('Added row with ${cells.length} cells to default section');
+      sections['data']!.add(processedCells);
+      print('Added row with ${processedCells.length} cells to default section');
     }
 
     if (sections.isEmpty) {
@@ -268,7 +277,42 @@ void main(List<String> args) async {
     </html>
     ''';
 
-    // Save HTML
+    // Validate table structure
+    void validateTableStructure(String htmlContent) {
+      final document = parse(htmlContent);
+      final rows = document.getElementsByTagName('tr');
+
+      // Get the expected number of columns from the header
+      final headerCells = rows.first.getElementsByTagName('th');
+      final expectedColumns = headerCells.length;
+
+      print(
+          'Validating table structure - expecting $expectedColumns columns per row');
+
+      for (var i = 1; i < rows.length; i++) {
+        final row = rows[i];
+        final cells = row.getElementsByTagName('td');
+        var effectiveColumnCount = 0;
+
+        // Count cells considering colspan and rowspan
+        for (final cell in cells) {
+          final colspan = int.tryParse(cell.attributes['colspan'] ?? '1') ?? 1;
+          effectiveColumnCount += colspan;
+        }
+
+        if (effectiveColumnCount != expectedColumns) {
+          throw Exception(
+              'Row ${i + 1} has $effectiveColumnCount columns, expected $expectedColumns');
+        }
+      }
+
+      print('Table structure validation passed');
+    }
+
+    // Validate and save HTML
+    print('\nValidating HTML structure...');
+    validateTableStructure(html);
+
     print('\nSaving HTML file...');
     await File('temp.html').writeAsString(html);
 
