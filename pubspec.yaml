@@ -1,11 +1,15 @@
-name: table_formatter
-description: Converts TSV data to formatted PNG
+name: format_table
+description: A tool to format TSV files into HTML tables with rowspan support
 version: 1.0.0
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  sdk: '>=2.19.0 <3.0.0'
 
 dependencies:
+  csv: ^5.0.2
   html: ^0.15.4
   process_run: ^0.13.1
-  csv: ^5.0.2 
+
+dev_dependencies:
+  test: ^1.24.6
+  lints: ^2.1.1 
