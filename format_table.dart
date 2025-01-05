@@ -125,6 +125,39 @@ void main(List<String> args) async {
 
     print('\nFound ${sections.length} sections: ${sections.keys.toList()}');
 
+    // Calculate row spans for the first column
+    final rowSpans = <int>[];
+    final firstColumnCells = <String>[];
+    var currentSpan = 1;
+    var currentCell = '';
+
+    for (var i = 0; i < sections['data']!.length; i++) {
+      final row = sections['data']![i];
+      final firstCell = row[0];
+
+      // Skip section headers
+      if (firstCell.contains('EVIDENCE FOR LEVEL')) {
+        continue;
+      }
+
+      if (i == 0 ||
+          (firstCell.isNotEmpty && !firstCell.contains('EVIDENCE FOR LEVEL'))) {
+        if (currentCell.isNotEmpty) {
+          rowSpans.add(currentSpan);
+          firstColumnCells.add(currentCell);
+        }
+        currentSpan = 1;
+        currentCell = firstCell;
+      } else {
+        currentSpan++;
+      }
+    }
+    // Add the last span
+    if (currentCell.isNotEmpty) {
+      rowSpans.add(currentSpan);
+      firstColumnCells.add(currentCell);
+    }
+
     // Generate HTML
     final numColumns = headerRow.length;
 
@@ -148,6 +181,10 @@ void main(List<String> args) async {
             }
             .header-row {
                 background-color: #f5f5f5;
+                font-weight: bold;
+            }
+            .full-row {
+                background-color: #e9ecef;
                 font-weight: bold;
             }
             table {
@@ -176,7 +213,7 @@ void main(List<String> args) async {
     <body>
     <table>
     <tr class="header-row">
-        ${headerRow.map((cell) => '<th>$cell</th>').join('\n')}
+        ${headerRow[0].trim().isNotEmpty && headerRow.skip(1).every((cell) => cell.trim().isEmpty) ? '<th colspan="$numColumns" class="full-row">${headerRow[0]}</th>' : headerRow.map((cell) => '<th>$cell</th>').join('\n')}
     </tr>
     ${sections.entries.map((entry) => '''
         ${entry.key != 'data' ? '''
@@ -184,11 +221,47 @@ void main(List<String> args) async {
             <th colspan="$numColumns" class="section-header">${entry.key}</th>
         </tr>
         ''' : ''}
-        ${entry.value.map((row) => '''
-            <tr>
-                ${row.map((cell) => '<td>$cell</td>').join('\n')}
-            </tr>
-        ''').join('\n')}
+        ${() {
+              var rowIndex = 0;
+              var spanIndex = 0;
+              return entry.value.map((row) {
+                final buffer = StringBuffer();
+
+                // Check if this is a section header (contains "EVIDENCE FOR LEVEL")
+                if (row[0].contains('EVIDENCE FOR LEVEL')) {
+                  buffer.write(
+                      '<tr><td colspan="$numColumns" class="full-row">${row[0]}</td></tr>\n');
+                  return buffer.toString();
+                }
+
+                buffer.write('<tr>');
+
+                // Handle first column
+                if (row[0].isNotEmpty) {
+                  // Check if this row should be part of a rowspan group
+                  if (spanIndex < rowSpans.length &&
+                      row[0] == firstColumnCells[spanIndex]) {
+                    buffer.write(
+                        '<td rowspan="${rowSpans[spanIndex]}">${row[0]}</td>');
+                    buffer.write(
+                        row.skip(1).map((cell) => '<td>$cell</td>').join('\n'));
+                    spanIndex++;
+                  } else {
+                    // Regular row with data
+                    buffer
+                        .write(row.map((cell) => '<td>$cell</td>').join('\n'));
+                  }
+                } else {
+                  // Continuation row of a rowspan
+                  buffer.write(
+                      row.skip(1).map((cell) => '<td>$cell</td>').join('\n'));
+                }
+
+                buffer.write('</tr>');
+                rowIndex++;
+                return buffer.toString();
+              }).join('\n');
+            }()}
     ''').join('\n')}
     </table>
     </body>
